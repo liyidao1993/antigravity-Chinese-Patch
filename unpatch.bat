@@ -13,6 +13,8 @@ if exist "%~dp0resources\app.asar" (
     set "ASAR_FILE=%~dp0resources\app.asar"
 ) else if exist "%~dp0..\resources\app.asar" (
     set "ASAR_FILE=%~dp0..\resources\app.asar"
+) else if exist "%LOCALAPPDATA%\Programs\antigravity\resources\app.asar" (
+    set "ASAR_FILE=%LOCALAPPDATA%\Programs\antigravity\resources\app.asar"
 )
 
 if "%ASAR_FILE%"=="" (
