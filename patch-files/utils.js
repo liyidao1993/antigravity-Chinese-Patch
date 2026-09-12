@@ -101,7 +101,7 @@ function ensureAppIsInDock() {
  * Uses a hidden title bar with native traffic lights on macOS.
  * Node integration is disabled and context isolation is enabled for security.
  */
-function createWindow(url) {
+function createWindow(url, storageManager) {
     ensureAppIsInDock();
     const theme = getThemeMode().toUpperCase();
     const isLight = theme.includes('LIGHT');
@@ -128,7 +128,7 @@ function createWindow(url) {
             nodeIntegration: false,
             contextIsolation: true,
             preload: path_1.default.join(__dirname, 'preload.js'),
-            devTools: !electron_1.app.isPackaged,
+            devTools: true,
         },
     });
     // Prevent the menu dropdown from being very wide due to long page titles
@@ -146,16 +146,45 @@ function createWindow(url) {
     (0, loadingOverlay_1.attachLoadingOverlay)(win, foregroundColor, backgroundColor);
     (0, keybindings_1.registerKeybindings)(win, {
         createNewWindow: () => {
-            void createWindow(url);
+            void createWindow(url, storageManager);
         },
         onQuitRequested: () => {
             exports.showQuitConfirmation = true;
             electron_1.app.quit();
         },
     });
+    // Zoom persistence — restore saved level and capture future changes.
+    if (storageManager) {
+        const ZOOM_LEVEL_KEY = 'zoomLevel';
+        let isRestoringZoom = false;
+        const applyStoredZoomLevel = async () => {
+            const items = await storageManager.getItems();
+            const stored = items[ZOOM_LEVEL_KEY];
+            if (stored !== undefined) {
+                const level = parseFloat(stored);
+                if (!isNaN(level)) {
+                    isRestoringZoom = true;
+                    win.webContents.setZoomLevel(level);
+                    isRestoringZoom = false;
+                }
+            }
+        };
+        win.webContents.on('did-finish-load', () => {
+            void applyStoredZoomLevel();
+        });
+        // Capture zoom changes from native menu accelerators, trackpad
+        // pinch-to-zoom, or Ctrl+scroll so they are also persisted.
+        win.webContents.on('zoom-changed', (_event, _direction) => {
+            if (isRestoringZoom) {
+                return;
+            }
+            const currentLevel = win.webContents.getZoomLevel();
+            void storageManager.updateItems({
+                [ZOOM_LEVEL_KEY]: String(currentLevel),
+            });
+        });
+    }
     void win.loadURL(url);
-    win.webContents.openDevTools();
-
     win.webContents.on('dom-ready', () => {
         try {
             const zhcn = require('./zhcn');
@@ -166,7 +195,6 @@ function createWindow(url) {
             console.error('Failed to load zhcn.js', err);
         }
     });
-
     return win;
 }
 /**

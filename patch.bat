@@ -78,6 +78,7 @@ copy /Y "%PATCH_FILES%\tray.js"           "%TEMP_EXTRACT%\dist\tray.js"         
 copy /Y "%PATCH_FILES%\updater.js"        "%TEMP_EXTRACT%\dist\updater.js"        >nul
 copy /Y "%PATCH_FILES%\loadingOverlay.js" "%TEMP_EXTRACT%\dist\loadingOverlay.js" >nul
 copy /Y "%PATCH_FILES%\ipcHandlers.js"    "%TEMP_EXTRACT%\dist\ipcHandlers.js"    >nul
+copy /Y "%PATCH_FILES%\keybindings.js"    "%TEMP_EXTRACT%\dist\keybindings.js"    >nul
 copy /Y "%PATCH_FILES%\utils.js"          "%TEMP_EXTRACT%\dist\utils.js"          >nul
 copy /Y "%PATCH_FILES%\zhcn.js"           "%TEMP_EXTRACT%\dist\zhcn.js"           >nul
 copy /Y "%PATCH_FILES%\ideInstall\wizardHtml.js" "%TEMP_EXTRACT%\dist\ideInstall\wizardHtml.js" >nul

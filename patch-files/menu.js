@@ -42,7 +42,12 @@ function setupApplicationMenu(url) {
         },
     }));
     addItemToSubmenu(menu, 'Help', 1, new electron_1.MenuItem({
-        role: 'toggleDevTools',
+        label: '切换开发者工具',
+        accelerator: 'F12',
+        click: () => {
+            const win = electron_1.BrowserWindow.getFocusedWindow() || electron_1.BrowserWindow.getAllWindows()[0];
+            win?.webContents.toggleDevTools();
+        },
     }));
     // Localize default menu labels to Chinese
     const menuTranslations = { 'File': '文件', 'Edit': '编辑', 'View': '视图', 'Window': '窗口', 'Help': '帮助' };

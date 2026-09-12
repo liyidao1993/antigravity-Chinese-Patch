@@ -5,3 +5,5 @@ _temp_extract/
 
 # Ignore skill translator backups
 skill-translator/backup/
+*_unpacked/
+verify_asar*/

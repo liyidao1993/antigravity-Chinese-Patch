@@ -45,6 +45,7 @@ const readline = __importStar(require("readline"));
 const utils_1 = require("./utils");
 const languageServer_1 = require("./languageServer");
 const updater_1 = require("./updater");
+const hostBridgeServer_1 = require("./hostBridgeServer");
 const constants_1 = require("./constants");
 const tray_1 = require("./tray");
 const storage_1 = require("./storage");
@@ -64,7 +65,10 @@ if (!gotTheLock) {
 let storageManager;
 let settingsService;
 let hasStartedMainApplication = false;
-let is退出ting = false;
+let isQuitting = false;
+// Loopback HTTP server the language server uses to read update status and
+// request an update. Kept at module scope so it is not garbage collected.
+let hostBridgeServer;
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -106,7 +110,8 @@ function handleDeepLink(url) {
 const PROTOCOL = electron_1.app
     .getName()
     .toLowerCase()
-    .replace(/\s+-\s+/g, '-');
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 if (!electron_1.app.isDefaultProtocolClient(PROTOCOL)) {
     electron_1.app.setAsDefaultProtocolClient(PROTOCOL);
 }
@@ -172,7 +177,7 @@ electron_1.app
     }
     if (DEV_URL) {
         console.log('Starting in dev mode with URL:', DEV_URL);
-        (0, utils_1.createWindow)(DEV_URL);
+        (0, utils_1.createWindow)(DEV_URL, storageManager);
         hasStartedMainApplication = true;
         return;
     }
@@ -182,18 +187,35 @@ electron_1.app
             console.error('ERROR:', msg);
         }
         else {
-            await electron_1.dialog.showErrorBox('Binary not found', msg);
+            await electron_1.dialog.showErrorBox('未找到可执行文件', msg);
         }
         electron_1.app.quit();
         return;
     }
     const csrf = crypto.randomUUID();
     console.log(`Starting app (v${electron_1.app.getVersion()}) with dynamic port…`);
+    // Start the host bridge server before the LS so we can hand it the URL
+    // and token. This lives in the main process (not the renderer) so it stays
+    // up in headless mode and after every window has been closed. It uses its
+    // own token — the renderer's CSRF token must not unlock ApplyUpdate.
+    try {
+        hostBridgeServer = await (0, hostBridgeServer_1.startHostBridgeServer)({
+            getUpdateStatus: updater_1.getHostUpdateStatus,
+            applyUpdate: updater_1.applyHostUpdate,
+        });
+        console.log(`Host bridge server listening on ${hostBridgeServer.url}`);
+    }
+    catch (err) {
+        // Non-fatal: the app is still usable, the LS just can't drive updates.
+        console.error('Failed to start host bridge server:', err.message);
+    }
     let handle;
     const targetPort = Number(process.env.JETSKI_LS_PORT) || constants_1.DYNAMIC_PORT;
     try {
         handle = await (0, languageServer_1.startAndMonitorLanguageServer)(targetPort, csrf, {
             headless: HEADLESS,
+            hostBridgeUrl: hostBridgeServer?.url,
+            hostBridgeToken: hostBridgeServer?.token,
             onPortChanged: (newPort) => {
                 const newUrl = `${constants_1.WINDOW_ORIGIN}:${newPort}/`;
                 console.log(`[Auto-Restart] Port changed! Reloading all windows with URL: ${newUrl}`);
@@ -214,7 +236,7 @@ electron_1.app
             console.error('Startup failed:', msg);
         }
         else {
-            await electron_1.dialog.showErrorBox('Startup failed', msg);
+            await electron_1.dialog.showErrorBox('启动失败', msg);
         }
         electron_1.app.quit();
         return;
@@ -245,12 +267,12 @@ electron_1.app
     // Initial window — opened once after the LS has successfully started.
     if (!HEADLESS) {
         (0, menu_1.setupApplicationMenu)(url);
-        (0, utils_1.createWindow)(url);
+        (0, utils_1.createWindow)(url, storageManager);
         if (electron_1.app.dock) {
             const dockMenu = electron_1.Menu.buildFromTemplate([
                 {
-                    label: 'New Window',
-                    click: () => (0, utils_1.createWindow)(url),
+                    label: '新建窗口',
+                    click: () => (0, utils_1.createWindow)(url, storageManager),
                 },
             ]);
             electron_1.app.dock.setMenu(dockMenu);
@@ -258,16 +280,16 @@ electron_1.app
         (0, tray_1.createTray)([
             {
                 id: 'running-agents',
-                label: '无运行中的 Agent',
+                label: '没有正在运行的 Agent',
                 enabled: false,
             },
             { type: 'separator' },
             {
-                label: `Open ${electron_1.app.getName()}`,
+                label: `打开 ${electron_1.app.getName()}`,
                 click: () => (0, utils_1.showOrCreateWindow)((0, languageServer_1.getLsPort)()),
             },
             {
-                label: 'Quit',
+                label: '退出',
                 click: () => {
                     // Triggers 'before-quit' to run graceful cleanup without confirmation.
                     electron_1.app.quit();
@@ -276,7 +298,7 @@ electron_1.app
         ]);
     }
     // Start checking for app updates.
-    (0, updater_1.initAutoUpdater)(HEADLESS);
+    (0, updater_1.initAutoUpdater)(HEADLESS, settingsService);
     hasStartedMainApplication = true;
 })
     .catch(() => {
@@ -303,6 +325,19 @@ electron_1.app.on('window-all-closed', async () => {
         electron_1.app.dock?.hide();
     }
 });
+/** Shuts down the host bridge server, if it was started. */
+async function closeHostBridgeServer() {
+    if (!hostBridgeServer) {
+        return;
+    }
+    try {
+        await hostBridgeServer.close();
+    }
+    catch (err) {
+        console.error('Failed to close host bridge server:', err);
+    }
+    hostBridgeServer = undefined;
+}
 /**
  * Fired just before the app quits (e.g. Cmd+Q on macOS, or after
  * window-all-closed on non-macOS). Ensures the LS is terminated even if
@@ -327,6 +362,10 @@ electron_1.app.on('before-quit', async (event) => {
             }),
             (0, languageServer_1.killLanguageServer)(),
         ]);
+        // The host bridge server comes down last, in reverse order of startup: the
+        // language server is its only client, so closing it first would just drop
+        // in-flight requests and log errors on the way out.
+        await closeHostBridgeServer();
         electron_1.app.quit();
         return;
     }
@@ -335,12 +374,12 @@ electron_1.app.on('before-quit', async (event) => {
     const win = electron_1.BrowserWindow.getFocusedWindow() || electron_1.BrowserWindow.getAllWindows()[0];
     const options = {
         type: 'question',
-        buttons: ['取消', 'Quit'],
+        buttons: ['取消', '退出'],
         defaultId: 1,
         cancelId: 0,
-        title: 'Confirm Quit',
+        title: '确认退出',
         message: '确定要退出吗？',
-        detail: 'There may be agents or background tasks running.',
+        detail: '可能仍有 Agent 或后台任务正在运行。',
     };
     (0, utils_1.setShowQuitConfirmation)(false);
     if (win) {
@@ -361,6 +400,6 @@ electron_1.app.on('activate', () => {
     // icon and no windows are open.
     if (!HEADLESS && electron_1.BrowserWindow.getAllWindows().length === 0) {
         const url = DEV_URL ?? `${constants_1.WINDOW_ORIGIN}:${(0, languageServer_1.getLsPort)()}/`;
-        (0, utils_1.createWindow)(url);
+        (0, utils_1.createWindow)(url, storageManager);
     }
 });
